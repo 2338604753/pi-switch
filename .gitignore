@@ -1,0 +1,27 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+
+# ---- PyInstaller 构建产物 ----
+build/
+dist/
+
+# ---- 运行时用户数据（含敏感信息，切勿上传） ----
+# profiles.json 保存了真实的 API Key，绝对不要提交到仓库！
+profiles.json
+backup/
+error.log
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

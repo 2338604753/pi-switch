@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "active": "my-provider",
+  "theme": "black",
+  "profiles": {
+    "my-provider": {
+      "name": "我的 Provider",
+      "providerId": "my-provider",
+      "kind": "custom",
+      "baseUrl": "https://example.com/v1",
+      "api": "openai-completions",
+      "apiKey": "sk-REPLACE_WITH_YOUR_KEY",
+      "defaultModel": "your-model-id",
+      "defaultThinkingLevel": "high",
+      "models": [
+        {
+          "id": "your-model-id",
+          "name": "Your Model",
+          "reasoning": false,
+          "input": ["text", "image"],
+          "contextWindow": 1048576,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ],
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      }
+    },
+    "my-builtin": {
+      "name": "内置 Provider (写入 auth.json)",
+      "providerId": "openai",
+      "kind": "builtin",
+      "apiKey": "$OPENAI_API_KEY",
+      "defaultModel": "gpt-4o"
+    }
+  }
+}
