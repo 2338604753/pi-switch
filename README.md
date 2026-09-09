@@ -7,6 +7,27 @@
 
 ---
 
+## 下载 / 安装
+
+**方式一：直接用免安装版（推荐）**
+
+前往 GitHub Releases 下载，解压后双击 `Pi-switch.exe` 即可运行，无需安装 Python：
+
+- 最新版本：<https://github.com/2338604753/pi-switch/releases>
+- 直接下载：<https://github.com/2338604753/pi-switch/releases/download/v1.0.0/Pi-switch.exe>
+
+**方式二：从源码运行**
+
+需要 Python 3（带 tkinter，官方安装包默认自带）：
+
+```bash
+python pi_switch.py
+```
+
+或直接双击 `启动Pi-switch.bat` / `启动Pi-switch.pyw`。
+
+---
+
 ## 有什么作用
 
 你每次手动改 `~/.pi/agent` 下的配置很麻烦，这个工具把常用的配置做成一个个 **profile（配置文件）**，
