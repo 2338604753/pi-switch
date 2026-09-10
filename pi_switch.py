@@ -56,8 +56,18 @@ API_CHOICES = [
 
 THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
-MODEL_TEMPLATE = '[{"id": "my-model", "name": "My Model", "reasoning": false, "input": ["text", "image"]}]'
-COMPAT_TEMPLATE = "{}"
+# 新建 profile 时的模型模板。
+# 默认 reasoning=true：现在主流模型基本都支持思考，不支持的模型手动改成 false 即可。
+MODEL_TEMPLATE = '[{"id": "my-model", "name": "My Model", "reasoning": true, "input": ["text", "image"]}]'
+
+# 兼容设置模板（新建 / 从没配过 compat 时显示）。
+# supportsDeveloperRole=false : 大多数 OpenAI 兼容中转不认 developer 角色，会直接 400，用 system 更稳。
+# supportsReasoningEffort  : 该端点是否支持 reasoning_effort。
+#   pi 只在 model.reasoning=true 时才会发这个参数，所以默认打开是安全的。
+COMPAT_TEMPLATE = json.dumps({
+    "supportsDeveloperRole": False,
+    "supportsReasoningEffort": True,
+}, ensure_ascii=False, indent=2)
 
 # 部分服务商(如 pdai.hi66.cc)用 Cloudflare 按浏览器 User-Agent 拦截非浏览器请求，
 # 所以这里伪装成 Chrome，否则 /models 或测试请求会被 403(Error 1010) 拦掉。
@@ -329,7 +339,7 @@ class PiSwitchApp:
         C = self._theme
         self._header_frame = tk.Frame(self.root, bg=C["bg_header"], padx=16, pady=10)
         self._header_frame.pack(side="top", fill="x")
-        bt = ttk.Button(self._header_frame, text="刷新当前配置", command=self._refresh_status, width=14)
+        bt = ttk.Button(self._header_frame, text="↻ 刷新当前配置", command=self._reload_all, width=16)
         bt.pack(side="right")
         self._theme_btn = ttk.Button(self._header_frame, width=10, command=self._toggle_theme)
         self._theme_btn.pack(side="right", padx=6)
@@ -446,7 +456,8 @@ class PiSwitchApp:
         self.cb_thinking = ttk.Combobox(form, values=THINKING_LEVELS, state="normal", width=10)
         self.cb_thinking.set("")
         self.cb_thinking.grid(row=r, column=1, sticky="w", pady=3)
-        ttk.Label(form, text="(可选，写 defaultThinkingLevel；留空则不改)", style="Dim.TLabel").grid(row=r, column=1, sticky="e", padx=4)
+        ttk.Label(form, text="(写 defaultThinkingLevel；选非 off 会自动把模型标记为 reasoning=true)",
+                  style="Dim.TLabel").grid(row=r, column=1, sticky="e", padx=4)
         r += 1
 
         # 模型列表 (JSON)
@@ -513,6 +524,58 @@ class PiSwitchApp:
             + (f"    (对应 profile: {active_name})" if active_name else "")
         )
 
+    def _select_row(self, pid):
+        """在左侧列表里选中指定 profile。"""
+        for i, p in enumerate(self._id_by_index.values()):
+            if p == pid:
+                self.listbox.selection_clear(0, tk.END)
+                self.listbox.selection_set(i)
+                self.listbox.see(i)
+                return True
+        return False
+
+    def _reload_all(self):
+        """「刷新当前配置」：真正从磁盘重新读取 profiles.json + pi 配置，并重填表单。
+
+        修复：旧版本这个按钮只刷新了顶部状态文字，右侧表单还是内存里的旧值，
+        所以在外面改了配置、或想重新加载时，点刷新根本不生效。
+        """
+        # 1) 重新读取 profiles.json（可能被手动编辑 / 另一个实例改过）
+        profiles = read_json(PROFILES_PATH, None)
+        if isinstance(profiles, dict) and "profiles" in profiles:
+            self.profiles = profiles
+        self.profiles.setdefault("version", 1)
+        self.profiles.setdefault("active", None)
+        self.profiles.setdefault("profiles", {})
+
+        # 2) 主题如果被改过就跟随文件
+        theme = self.profiles.get("theme")
+        if theme in THEMES and theme != self.current_theme:
+            self.current_theme = theme
+            self._apply_theme()
+            self._update_theme_btn()
+
+        # 3) 刷新左侧列表 + 顶部状态
+        self._refresh_list()
+        self._refresh_status()
+
+        # 4) 重填右侧表单：优先当前正在编辑的 profile，其次当前激活的
+        target = self.editing_id if self.editing_id in self.profiles["profiles"] else None
+        if target is None and self.profiles.get("active") in self.profiles["profiles"]:
+            target = self.profiles["active"]
+        if target:
+            self.editing_id = target
+            self._fill_form(self.profiles["profiles"][target])
+            self._select_row(target)
+        else:
+            self.editing_id = None
+            self._reset_form()
+
+        self.status_var.set(
+            self.status_var.get()
+            + f"    · 已重新读取 profiles.json（{len(self.profiles['profiles'])} 个配置）"
+        )
+
     def _open_backup_dir(self):
         os.makedirs(BACKUP_DIR, exist_ok=True)
         try:
@@ -561,16 +624,22 @@ class PiSwitchApp:
         self.e_key.delete(0, tk.END); self.e_key.insert(0, prof.get("apiKey", ""))
         self.cb_model.set(prof.get("defaultModel", ""))
         self.cb_thinking.set(prof.get("defaultThinkingLevel", ""))
+        # 如实显示已保存的内容：只有「从没配过」才用模板填充，
+        # 空数组 / 空对象要原样显示，否则表单会和磁盘上的真实配置对不上。
         models = prof.get("models")
         self.txt_models.delete("1.0", tk.END)
-        if models:
+        if isinstance(models, list) and models:
             self.txt_models.insert("1.0", json.dumps(models, ensure_ascii=False, indent=2))
+        elif isinstance(models, list):
+            self.txt_models.insert("1.0", "[]")
         else:
             self.txt_models.insert("1.0", MODEL_TEMPLATE)
         compat = prof.get("compat")
         self.txt_compat.delete("1.0", tk.END)
-        if compat:
+        if isinstance(compat, dict) and compat:
             self.txt_compat.insert("1.0", json.dumps(compat, ensure_ascii=False, indent=2))
+        elif isinstance(compat, dict):
+            self.txt_compat.insert("1.0", "{}")
         else:
             self.txt_compat.insert("1.0", COMPAT_TEMPLATE)
         self._toggle_kind()
@@ -657,12 +726,51 @@ class PiSwitchApp:
         self.e_name.insert(0, pid)
         self.e_provider.focus_set()
 
+    @staticmethod
+    def _sync_reasoning(prof):
+        """让「思考等级」和模型的 reasoning / compat 保持一致。
+
+        规则（只对自定义 provider，且「思考等级」填了非 off 的值时生效）：
+          - 每个模型的 reasoning 设为 true
+            —— pi 只有看到 model.reasoning=true，才会发 reasoning_effort，
+               也才会把响应里的 reasoning_content 渲染成思考块。
+          - compat.supportsReasoningEffort 设为 true
+          - compat 里没有 supportsDeveloperRole 时补上 false
+
+        绝不反向改：选 off 时不把 reasoning 改 false，避免把用户显式配好的推理模型改坏。
+        返回被修改项的说明列表，供调用方提示用户。
+        """
+        thinking = (prof.get("defaultThinkingLevel") or "").strip()
+        if not thinking or thinking == "off" or prof.get("kind") != "custom":
+            return []
+        changed = []
+        models = prof.get("models")
+        if isinstance(models, list):
+            need = sum(1 for m in models if isinstance(m, dict) and m.get("reasoning") is not True)
+            if need:
+                for m in models:
+                    if isinstance(m, dict):
+                        m["reasoning"] = True
+                changed.append(f"{need} 个模型 reasoning→true")
+        compat = prof.get("compat")
+        if not isinstance(compat, dict):
+            compat = {}
+            prof["compat"] = compat
+        if compat.get("supportsReasoningEffort") is not True:
+            compat["supportsReasoningEffort"] = True
+            changed.append("compat.supportsReasoningEffort→true")
+        if "supportsDeveloperRole" not in compat:
+            compat["supportsDeveloperRole"] = False
+            changed.append("compat.supportsDeveloperRole→false")
+        return changed
+
     def _save_with_id(self, pid):
         try:
             prof = self._collect_form()
         except ValueError as e:
             messagebox.showerror("JSON 错误", f"模型列表或 compat 不是合法 JSON：\n\n{e}")
             return False
+        sync_notes = self._sync_reasoning(prof)
         if not prof["providerId"]:
             messagebox.showerror("缺少字段", "Provider ID 不能为空。")
             return False
@@ -677,11 +785,13 @@ class PiSwitchApp:
         self._save_profiles()
         self._refresh_list()
         # 选中刚保存
-        for i, p in enumerate(self._id_by_index.values()):
-            if p == pid:
-                self.listbox.selection_clear(0, tk.END)
-                self.listbox.selection_set(i)
-                break
+        self._select_row(pid)
+        # 把自动同步的结果回填到表单，避免界面还显示旧的 reasoning:false
+        if sync_notes:
+            self.editing_id = pid
+            self._fill_form(prof)
+            self._select_row(pid)
+            self.status_var.set("已自动同步：" + "；".join(sync_notes))
         return True
 
     def _save_editing(self):
@@ -1166,7 +1276,12 @@ class PiSwitchApp:
         hdr = ttk.Frame(win)
         hdr.pack(fill="x", padx=10, pady=(8, 4))
         ttk.Label(hdr, text=f"共 {len(models)} 个模型", font=("Segoe UI", 11, "bold")).pack(side="left")
-        ttk.Button(hdr, text="⬇ 全部导入到模型列表", command=self._import_fetched_models).pack(side="right")
+        # 导入时是否把模型标记为推理模型（旧版本写死 False，导致 pi 根本不发思考参数）
+        self._import_reasoning = tk.BooleanVar(value=True)
+        ttk.Checkbutton(hdr, text="标记为推理模型(reasoning)",
+                        variable=self._import_reasoning).pack(side="right", padx=(8, 0))
+        ttk.Button(hdr, text="⬇ 全部导入到模型列表",
+                   command=self._import_fetched_models).pack(side="right", padx=4)
 
         lf = ttk.Frame(win)
         lf.pack(fill="both", expand=True, padx=10, pady=4)
@@ -1275,6 +1390,13 @@ class PiSwitchApp:
         models = getattr(self, "_last_fetched_models", None)
         if not models:
             return
+        reasoning_flag = True
+        var = getattr(self, "_import_reasoning", None)
+        if var is not None:
+            try:
+                reasoning_flag = bool(var.get())
+            except Exception:
+                reasoning_flag = True
         rows = []
         for m in models:
             mid = m.get("id")
@@ -1283,7 +1405,7 @@ class PiSwitchApp:
             rows.append({
                 "id": mid,
                 "name": m.get("name") or mid,
-                "reasoning": False,
+                "reasoning": reasoning_flag,
                 "input": ["text", "image"],
                 "contextWindow": 1048576,
                 "maxTokens": 16384,
@@ -1293,7 +1415,8 @@ class PiSwitchApp:
             messagebox.showinfo("导入", "没有可导入的模型。")
             return
         if not messagebox.askyesno("导入模型",
-                                   f"将 {len(rows)} 个模型写入右侧「模型列表」？\n\n（会替换当前模型列表内容）"):
+                                   f"将 {len(rows)} 个模型写入右侧「模型列表」？\n\n"
+                                   f"reasoning = {reasoning_flag}\n\n（会替换当前模型列表内容）"):
             return
         self.txt_models.delete("1.0", tk.END)
         self.txt_models.insert("1.0", json.dumps(rows, ensure_ascii=False, indent=2))
