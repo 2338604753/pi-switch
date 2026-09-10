@@ -23,6 +23,7 @@ error.log
 
 # ---- 打包产物（exe 通过 Releases 分发，不进仓库） ----
 *.exe
+*.exe.*
 Pi-switch.exe.bak
 
 # ---- 编辑器 / 系统 ----
