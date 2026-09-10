@@ -55,6 +55,10 @@ API_CHOICES = [
 ]
 
 THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+# pi 里 xhigh / max 属于 opt-in 的扩展档位：模型必须用 thinkingLevelMap 显式声明支持，
+# 否则 pi 的 clampThinkingLevel() 会把它压低成 high，界面上永远看不到 xhigh / max。
+# 见 pi docs/models.md “Thinking Level Map”。
+EXTENDED_THINKING_LEVELS = ["xhigh", "max"]
 
 # 新建 profile 时的模型模板。
 # 默认 reasoning=true：现在主流模型基本都支持思考，不支持的模型手动改成 false 即可。
@@ -456,7 +460,7 @@ class PiSwitchApp:
         self.cb_thinking = ttk.Combobox(form, values=THINKING_LEVELS, state="normal", width=10)
         self.cb_thinking.set("")
         self.cb_thinking.grid(row=r, column=1, sticky="w", pady=3)
-        ttk.Label(form, text="(写 defaultThinkingLevel；选非 off 会自动把模型标记为 reasoning=true)",
+        ttk.Label(form, text="(写 defaultThinkingLevel；非 off 会自动补 reasoning=true，xhigh/max 会自动补 thinkingLevelMap)",
                   style="Dim.TLabel").grid(row=r, column=1, sticky="e", padx=4)
         r += 1
 
@@ -736,8 +740,12 @@ class PiSwitchApp:
                也才会把响应里的 reasoning_content 渲染成思考块。
           - compat.supportsReasoningEffort 设为 true
           - compat 里没有 supportsDeveloperRole 时补上 false
+          - 选了 xhigh / max 时，给每个模型补 thinkingLevelMap
+            —— pi 要求扩展档位必须显式声明（omitted 视为不支持，会被 clamp 成 high），
+               只写 defaultThinkingLevel=max 而不写 thinkingLevelMap 是这个界面以前的 bug。
 
-        绝不反向改：选 off 时不把 reasoning 改 false，避免把用户显式配好的推理模型改坏。
+        绝不反向改：选 off 时不把 reasoning 改 false，也从不删掉用户已有的档位映射
+        （只有缺失或显式为 null 的项才会被补上），避免把用户显式配好的模型改坏。
         返回被修改项的说明列表，供调用方提示用户。
         """
         thinking = (prof.get("defaultThinkingLevel") or "").strip()
@@ -762,6 +770,32 @@ class PiSwitchApp:
         if "supportsDeveloperRole" not in compat:
             compat["supportsDeveloperRole"] = False
             changed.append("compat.supportsDeveloperRole→false")
+
+        # 扩展档位 (xhigh / max) 必须写进模型的 thinkingLevelMap，否则 pi 会 clamp 回 high。
+        # 选 max 时连 xhigh 一起放开，保证 /thinking 里档位是连续的、降档不用再改配置。
+        if thinking in EXTENDED_THINKING_LEVELS and isinstance(models, list):
+            wanted = EXTENDED_THINKING_LEVELS[:EXTENDED_THINKING_LEVELS.index(thinking) + 1]
+            fixed = 0
+            for m in models:
+                if not isinstance(m, dict):
+                    continue
+                tlm = m.get("thinkingLevelMap")
+                if not isinstance(tlm, dict):
+                    tlm = {}
+                    m["thinkingLevelMap"] = tlm
+                touched = False
+                for lvl in wanted:
+                    cur = tlm.get(lvl)
+                    if isinstance(cur, str) and cur:  # 用户自定义过，保持不动
+                        continue
+                    tlm[lvl] = lvl
+                    touched = True
+                if touched:
+                    fixed += 1
+                elif not tlm:  # 没写入任何东西就别留一个空对象
+                    m.pop("thinkingLevelMap", None)
+            if fixed:
+                changed.append(f"{fixed} 个模型 thinkingLevelMap→{'+'.join(wanted)}")
         return changed
 
     def _save_with_id(self, pid):
@@ -806,7 +840,7 @@ class PiSwitchApp:
                 return
             self.editing_id = pid
         if self._save_with_id(self.editing_id):
-            messagebox.showinfo("已保存", f"已保存配置：{self.editing_id}")
+            self.status_var.set(f"已保存配置：{self.editing_id}")
             self._refresh_status()
 
     def _delete_selected(self):
@@ -915,18 +949,16 @@ class PiSwitchApp:
         prof = self.profiles["profiles"].get(pid)
         if not prof:
             return
-        if not messagebox.askyesno("确认激活", f"将「{prof.get('name', pid)}」应用为 pi 当前配置？\n\n会备份并修改 pi 的配置文件。"):
-            return
+        # 直接执行，不再弹确认框；但激活前仍跑一遍同步，避免旧 profile 缺 thinkingLevelMap
+        self._sync_reasoning(prof)
+        self._save_profiles()
         errors = self._do_activate(pid, prof)
         if errors:
             messagebox.showerror("激活失败", "\n".join(errors))
         else:
             self._refresh_list()
             self._refresh_status()
-            messagebox.showinfo("已激活",
-                                f"已激活：{prof.get('name', pid)}\n\n"
-                                "修改已写入 pi 配置文件。\n"
-                                "下次启动 pi (或打开 /model 选择) 后生效。")
+            self.status_var.set(f"已激活：{prof.get('name', pid)}（已写入 pi 配置，重启 pi 后生效）")
 
     def _activate_editing(self):
         # 先保存当前编辑内容，再激活
@@ -942,15 +974,14 @@ class PiSwitchApp:
         if not self._save_with_id(self.editing_id):
             return
         prof = self.profiles["profiles"].get(self.editing_id)
-        if not messagebox.askyesno("确认激活", "将当前编辑内容激活并应用？"):
-            return
+        # 直接执行，不再弹确认框
         errors = self._do_activate(self.editing_id, prof)
         if errors:
             messagebox.showerror("激活失败", "\n".join(errors))
         else:
             self._refresh_list()
             self._refresh_status()
-            messagebox.showinfo("已激活", "已激活并写入 pi 配置文件。\n下次启动 pi (或 /model) 后生效。")
+            self.status_var.set(f"已激活：{prof.get('name', self.editing_id)}（已写入 pi 配置，重启 pi 后生效）")
 
     # ------------------------------------------------------------------
     # 从 pi 当前配置导入

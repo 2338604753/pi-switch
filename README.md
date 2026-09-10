@@ -84,10 +84,28 @@ python pi_switch.py
   > 🔄 **会自动联动**：只要填了非 `off` 的思考等级，点「保存配置 / 激活并应用」时就会自动：
   > - 把模型列表里每个模型的 `reasoning` 置为 `true`；
   > - 把 `compat.supportsReasoningEffort` 置为 `true`；
-  > - 若 `compat` 里没有 `supportsDeveloperRole`，补上 `false`。
+  > - 若 `compat` 里没有 `supportsDeveloperRole`，补上 `false`；
+  > - 选了 `xhigh` / `max` 时，给每个模型补上 `thinkingLevelMap`（见下）。
   >
   > 改动结果会在状态栏提示，并同步回填到表单，不会再出现「界面显示 false」的情况。
-  > 选 `off` 时刻意**不会**把 `reasoning` 改回 `false`，避免把你显式配好的推理模型改坏。
+  > 选 `off` 时刻意**不会**把 `reasoning` 改回 `false`，也不会删除你已有的档位映射，
+  > 避免把你显式配好的模型改坏。
+
+  > ⚠️ **为什么 `xhigh` / `max` 必须配 `thinkingLevelMap`**：
+  > 在 pi 里，`xhigh` 和 `max` 属于 **opt-in 的扩展档位**：模型必须用 `thinkingLevelMap`
+  > 显式声明支持，否则 pi 的 `clampThinkingLevel()` 会把它悄悄压低成 `high`
+  > （见 pi 文档 `docs/models.md` → “Thinking Level Map”）。
+  > 也就是说**只写 `defaultThinkingLevel: "max"` 是没用的**，状态栏会一直显示 `high`。
+  > 从 v1.1.1 起本工具会自动帮你补上，选 `xhigh` 时写：
+  > ```json
+  > "thinkingLevelMap": { "xhigh": "xhigh" }
+  > ```
+  > 选 `max` 时写（连 `xhigh` 一起放开，档位连续，降档不用再改配置）：
+  > ```json
+  > "thinkingLevelMap": { "xhigh": "xhigh", "max": "max" }
+  > ```
+  > 已经手写过映射的模型不会被覆盖（只有缺失或显式为 `null` 的项才会被补上），
+  > 也可以用 `null` 显式屏蔽某一档，例如 `{ "xhigh": null, "max": "max" }`。
 - **compat** 用于处理某些兼容性开关，例如很多 OpenAI 兼容服务不支持 `developer` 角色：
   ```json
   { "supportsDeveloperRole": false, "supportsReasoningEffort": true }
@@ -113,9 +131,11 @@ python pi_switch.py
 
 | 按钮 | 作用 |
 |------|------|
+| 保存配置 (Save) | 保存当前编辑内容到 `profiles.json`（不弹窗，结果看状态栏） |
+| 激活并应用 (Activate) | 先保存，再把配置写入 pi 的 `models.json` / `auth.json` / `settings.json`（不弹窗，结果看状态栏） |
 | 新建 | 创建一个新配置 |
 | 复制 | 把选中的配置复制一份，可在此基础上修改 |
-| 激活 | 把选中的配置应用到 pi（先备份再写入） |
+| 激活 | 把选中的配置应用到 pi（先备份再写入，同样不弹确认框） |
 | 删除 | 删除选中的配置 |
 | 导入当前 | 读取 pi 当前 `defaultProvider/defaultModel`，导入成配置 |
 | 批量导入 | 扫描 `models.json` + `auth.json`，把所有 provider 一次性导入 |
@@ -188,6 +208,14 @@ dist/Pi-switch.exe
 - **双击 .bat 一闪而过**：说明没找到 Python，或 Python 没加入 PATH。安装时勾选 “Add Python to PATH”。
 - **在界面里把「思考等级」选成 high，但 compat 里 `supportsReasoningEffort` 还是 false**：
   这是 v1.0.0 的 bug（已修）。v1.1.0 起保存/激活时会自动联动，并在状态栏提示改了什么。
+- **思考等级选了 `xhigh` / `max`，pi 状态栏却一直显示 `high`**：
+  这是 v1.1.0 及更早版本的 bug（v1.1.1 已修）。原因是旧版只写了 `defaultThinkingLevel`，
+  没给模型写 pi 要求的 `thinkingLevelMap`，于是 `xhigh` / `max` 被 `clampThinkingLevel()` 压回 `high`。
+  v1.1.1 起保存/激活会自动补上映射；如果你手上是旧版，也可以手动在「模型列表 (JSON)」里给模型加：
+  ```json
+  "thinkingLevelMap": { "xhigh": "xhigh", "max": "max" }
+  ```
+  然后「保存配置」→「激活并应用」，**重启 pi**，再在 `/thinking` 里选一次档位即可（会话内已有档位要重新选）。
 - **在外部改了 `profiles.json`，点「刷新当前配置」没反应**：
   这也是 v1.0.0 的 bug（已修）：旧版该按钮只刷新顶部状态文字，不重载表单。v1.1.0 起会真正重新读取并重填表单。
 - **激活后 pi 里看不到模型**：检查模型列表里的 `id` 是否真实存在，`baseUrl` 是否正确。
@@ -200,6 +228,22 @@ dist/Pi-switch.exe
 ---
 
 ## 更新日志
+
+### v1.1.1
+
+修复 `xhigh` / `max` 选了不生效，以及「保存 / 激活」弹窗过多：
+
+- **修复 `xhigh` / `max` 被压回 `high`**：pi 里这两个是 opt-in 的扩展档位，必须由模型级
+  `thinkingLevelMap` 显式声明；旧版只写 `defaultThinkingLevel`，所以永远被 clamp 成 `high`。
+  现在保存/激活时会自动补 `thinkingLevelMap`（选 `max` 就连 `xhigh` 一起放开），
+  只补缺失或 `null` 的项，绝不覆盖手写值，选 `off` 也不反向修改。
+- **左侧「激活」按钮也会跑一遍联动**：以前它直接用 profile 里的旧内容写入，
+  老的、没带 `thinkingLevelMap` 的配置激活后依然不生效；现在激活前也会同步一次。
+- **「保存配置」/「激活并应用」不再弹窗**：成功结果改为显示在底部状态栏
+  （`已保存配置：xxx` / `已激活：xxx`），少点一次「确定」。
+  仅保留真正出错或防误操作的提示：JSON 格式错误、Provider ID 为空、Base URL 不合法、
+  激活失败、新建配置时 ID 重名覆盖确认。
+- **「思考等级」旁的说明文字**更新为：非 `off` 会自动补 `reasoning=true`，`xhigh`/`max` 会自动补 `thinkingLevelMap`。
 
 ### v1.1.0
 
