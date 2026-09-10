@@ -963,6 +963,8 @@ class PiSwitchApp:
             messagebox.showinfo("提示", "pi settings.json 中没有 defaultProvider，无法导入。")
             return
         default_model = st.get("defaultModel", "")
+        # 思考等级也要一起导入，否则表单里是空的，保存时 _sync_reasoning 不会触发
+        default_thinking = st.get("defaultThinkingLevel", "")
 
         # 尝试在 models.json 找自定义 provider
         models = read_json(MODELS_PATH, {})
@@ -978,6 +980,7 @@ class PiSwitchApp:
                 "compat": prov.get("compat") if isinstance(prov.get("compat"), dict) else None,
                 "models": prov.get("models") if isinstance(prov.get("models"), list) else None,
                 "defaultModel": default_model,
+                "defaultThinkingLevel": default_thinking,
             }
         else:
             # 内置 provider，从 auth.json 取 key
@@ -989,6 +992,7 @@ class PiSwitchApp:
                 "kind": "builtin",
                 "apiKey": (entry.get("key") if isinstance(entry, dict) else "") or "",
                 "defaultModel": default_model,
+                "defaultThinkingLevel": default_thinking,
             }
 
         self.profiles["profiles"][provider] = prof
@@ -1023,6 +1027,10 @@ class PiSwitchApp:
     def _import_all(self):
         """扫描 models.json 全部自定义 provider + auth.json 全部内置 provider，批量生成 profiles。"""
         added = []
+        # settings.json 里的 defaultProvider / defaultThinkingLevel 只对当前激活的那个 provider 有意义
+        st = read_json(SETTINGS_PATH, {})
+        active_provider = st.get("defaultProvider")
+        active_thinking = st.get("defaultThinkingLevel", "")
         # 自定义 providers (models.json)
         models = read_json(MODELS_PATH, {})
         for pid, prov in models.get("providers", {}).items():
@@ -1039,6 +1047,8 @@ class PiSwitchApp:
                 "models": prov.get("models") if isinstance(prov.get("models"), list) else None,
                 "defaultModel": "",
             }
+            if pid == active_provider and active_thinking:
+                prof["defaultThinkingLevel"] = active_thinking
             self.profiles["profiles"][pid] = prof
             added.append(f"[custom]  {pid}")
         # 内置 providers (auth.json)

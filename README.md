@@ -14,7 +14,7 @@
 前往 GitHub Releases 下载，解压后双击 `Pi-switch.exe` 即可运行，无需安装 Python：
 
 - 最新版本：<https://github.com/2338604753/pi-switch/releases>
-- 直接下载：<https://github.com/2338604753/pi-switch/releases/download/v1.0.0/Pi-switch.exe>
+- 直接下载：<https://github.com/2338604753/pi-switch/releases/download/v1.1.0/Pi-switch.exe>
 
 **方式二：从源码运行**
 
@@ -63,19 +63,42 @@ python pi_switch.py
 - **获取模型**：在表单填好 **Base URL** 和 **API Key**，点「⚙ 获取模型」，会自动调用 `{baseUrl}/models` 拉取该接口下的所有模型并列出。每个模型旁边有：
   - **复制**：一键复制模型名（ID）。
   - **测试**：向该模型发一个最简请求，验证它是否能正常响应（2xx 即算通）。
+  - 顶部有 **☑ 标记为推理模型(reasoning)** 勾选框（默认勾上），决定导入时模型的 `reasoning` 写 `true` 还是 `false`。
+    如果你的接口里有非推理模型，取消勾选后导入，再手动改对应模型即可。
   - 如需生成配置，点「⬇ 全部导入到模型列表」，会把获得到的模型整理成 pi 格式填回表单。
 - **模型列表** 填 JSON 数组。示例：
   ```json
   [
-    { "id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash", "reasoning": false, "input": ["text"], "contextWindow": 1048576, "maxTokens": 32768 }
+    { "id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash", "reasoning": true, "input": ["text"], "contextWindow": 1048576, "maxTokens": 32768 }
   ]
   ```
+  > ⚠️ **`reasoning` 必须是 `true`，思考才会生效。**
+  > pi 内部只有在 `model.reasoning === true` 时才会发送思考参数（`reasoning_effort`），
+  > 也才会把接口返回的 `reasoning_content` 渲染成思考块。填 `false` 的话，
+  > 即使把「思考等级」选成 `high`，pi 也不会有任何思考输出。
+  > 非推理模型（如纯对话模型）保持 `false` 即可。
+
   若模型列表里只有示例的 `my-model`，激活时会自动忽略，不会写进 pi 配置。
 - **思考等级** 可选：`off / minimal / low / medium / high / xhigh / max`，会写成 `defaultThinkingLevel`；留空则不改动 pi 原来的设置。
-- **compat** 用于处理某些兼容性开关，例如很多 OpenAI 兼容服务不支持 `developer` 角色或 `reasoning_effort`：
+
+  > 🔄 **会自动联动**：只要填了非 `off` 的思考等级，点「保存配置 / 激活并应用」时就会自动：
+  > - 把模型列表里每个模型的 `reasoning` 置为 `true`；
+  > - 把 `compat.supportsReasoningEffort` 置为 `true`；
+  > - 若 `compat` 里没有 `supportsDeveloperRole`，补上 `false`。
+  >
+  > 改动结果会在状态栏提示，并同步回填到表单，不会再出现「界面显示 false」的情况。
+  > 选 `off` 时刻意**不会**把 `reasoning` 改回 `false`，避免把你显式配好的推理模型改坏。
+- **compat** 用于处理某些兼容性开关，例如很多 OpenAI 兼容服务不支持 `developer` 角色：
   ```json
-  { "supportsDeveloperRole": false, "supportsReasoningEffort": false }
+  { "supportsDeveloperRole": false, "supportsReasoningEffort": true }
   ```
+  - `supportsDeveloperRole`：置 `false` 时 pi 用 `system` 角色而非 `developer` 角色发送系统提示词。
+    多数第三方 OpenAI 兼容中转不认 `developer`，会直接返回 400，所以推荐 `false`。
+  - `supportsReasoningEffort`：该接口是否支持 `reasoning_effort` 参数。
+    因为 pi 只在 `model.reasoning === true` 时才发送它，所以填 `true` 是安全的。
+  > 一般用**不需要**加 `thinkingFormat`。pi 的 `openai-completions` 会自动识别
+  > `reasoning_content` / `reasoning` / `reasoning_text` 字段，`thinkingFormat`
+  > 只影响“发送什么参数”，不设置反而兼容面更广。
 
 ---
 
@@ -98,6 +121,7 @@ python pi_switch.py
 | 批量导入 | 扫描 `models.json` + `auth.json`，把所有 provider 一次性导入 |
 | 备份管理 | 打开备份目录 |
 | 打开配置 | 直接打开 pi 的 settings/models/auth/profiles 文件 |
+| ↻ 刷新当前配置 | 重新从磁盘读取 `profiles.json` 与 pi 配置，刷新列表并重填右侧表单 |
 
 ---
 
@@ -148,13 +172,49 @@ pip install pyinstaller
 pyinstaller Pi-switch.spec
 ```
 
-生成的可执行文件位于 `dist/` 目录（已被 `.gitignore` 忽略，不随源码上传）。
+`Pi-switch.spec` 配置的是 **单文件 exe**（onefile），生成的可执行文件为：
+
+```
+dist/Pi-switch.exe
+```
+
+`dist/` 与 `build/` 已被 `.gitignore` 忽略，不随源码上传。
+因为 `profiles.json` 是运行目录下的独立文件，单文件 exe 不会被它打进去，可放心分发。
 
 ---
 
 ## 常见问题
 
 - **双击 .bat 一闪而过**：说明没找到 Python，或 Python 没加入 PATH。安装时勾选 “Add Python to PATH”。
+- **在界面里把「思考等级」选成 high，但 compat 里 `supportsReasoningEffort` 还是 false**：
+  这是 v1.0.0 的 bug（已修）。v1.1.0 起保存/激活时会自动联动，并在状态栏提示改了什么。
+- **在外部改了 `profiles.json`，点「刷新当前配置」没反应**：
+  这也是 v1.0.0 的 bug（已修）：旧版该按钮只刷新顶部状态文字，不重载表单。v1.1.0 起会真正重新读取并重填表单。
 - **激活后 pi 里看不到模型**：检查模型列表里的 `id` 是否真实存在，`baseUrl` 是否正确。
+- **pi 里没有思考输出**：确认模型的 `reasoning` 是 `true`，且「思考等级」不是 `off`；
+  另外若接口类型是 `openai-responses`，部分中转在带系统提示词或结构化 input 时会丢掉思考内容，
+  这种情况改用 `openai-completions` 即可。
 - **想用环境变量而不是明文 key**：在 API Key 里填 `$环境变量名`。
 - **改坏了**：去 `backup` 目录把对应文件恢复。
+
+---
+
+## 更新日志
+
+### v1.1.0
+
+修复「思考等级」不生效、刷新不重载、导入模型强制 `reasoning=false`：
+
+- **`⚙ 获取模型` 导入不再强制 `reasoning: false`**：新增「标记为推理模型(reasoning)」勾选框，默认 `true`。
+- **`MODEL_TEMPLATE` 默认 `reasoning: true`**。
+- **思考等级自动联动**：填了非 `off` 的思考等级时，保存/激活会自动把模型 `reasoning`
+  与 `compat.supportsReasoningEffort` 置为 `true`，并提示 + 回填表单；选 `off` 时不反向修改。
+- **`↻ 刷新当前配置` 真正重载**：重新读取 `profiles.json` + pi 配置，刷新列表、状态与右侧表单。
+- **表单如实显示**：空数组/空对象原样显示成 `[]` / `{}`，不再用模板冒充导致界面与磁盘不一致。
+- **`COMPAT_TEMPLATE` 改为推荐默认值** `{"supportsDeveloperRole": false, "supportsReasoningEffort": true}`。
+- **`导入当前` / `批量导入` 现在会一起导入 `defaultThinkingLevel`**（旧版漏了，导致思考等级显示为空、联动失效）。
+- **`Pi-switch.spec` 改为单文件打包**，与 README 里的 `Pi-switch.exe` 下载保持一致。
+
+### v1.0.0
+
+- 首个版本：profile 管理 / 一键激活 / 获取模型 / 备份管理。
