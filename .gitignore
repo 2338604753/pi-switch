@@ -15,9 +15,15 @@ dist/
 
 # ---- 运行时用户数据（含敏感信息，切勿上传） ----
 # profiles.json 保存了真实的 API Key，绝对不要提交到仓库！
+# 带时间戳的备份（profiles.json.bak-20260911_004826 之类）同样含 Key，一并忽略。
 profiles.json
+profiles.json.*
 backup/
 error.log
+
+# ---- 打包产物（exe 通过 Releases 分发，不进仓库） ----
+*.exe
+Pi-switch.exe.bak
 
 # ---- 编辑器 / 系统 ----
 .vscode/
