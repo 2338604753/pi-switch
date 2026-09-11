@@ -931,6 +931,26 @@ class PiSwitchApp:
             compat["supportsDeveloperRole"] = False
             changed.append("compat.supportsDeveloperRole→false")
 
+        # off 档必须显式映射成 "none"。
+        # pi 对 off 的默认行为是「索性不发 reasoning_effort」，而不少中转（如 pdai.hi66.cc）
+        # 在不传该参数时默认是开启思考的 —— 结果就是 pi 里切到 off 也关不掉思考。
+        # 显式写 "none" 之后，pi 才会在 off 档真的把 reasoning_effort=none 发出去。
+        # 只在缺失时补：用户显式配过 off（含 null = 不支持关闭）就绝不覆盖。
+        if isinstance(models, list):
+            fixed_off = 0
+            for m in models:
+                if not isinstance(m, dict):
+                    continue
+                tlm = m.get("thinkingLevelMap")
+                if not isinstance(tlm, dict):
+                    tlm = {}
+                    m["thinkingLevelMap"] = tlm
+                if "off" not in tlm:
+                    tlm["off"] = "none"
+                    fixed_off += 1
+            if fixed_off:
+                changed.append(f"{fixed_off} 个模型 thinkingLevelMap.off→none")
+
         # 扩展档位 (xhigh / max) 必须写进模型的 thinkingLevelMap，否则 pi 会 clamp 回 high。
         # 选 max 时连 xhigh 一起放开，保证 /thinking 里档位是连续的、降档不用再改配置。
         if thinking in EXTENDED_THINKING_LEVELS and isinstance(models, list):
@@ -978,9 +998,7 @@ class PiSwitchApp:
                 if not prof["baseUrl"].startswith(("http://", "https://")):
                     messagebox.showerror("字段错误", "Base URL 需要以 http:// 或 https:// 开头。")
                     return False
-        if not prof.get("apiKey"):
-            if not messagebox.askyesno("提示", "API Key 为空，仍要保存吗？"):
-                return False
+        # API Key 为空也直接保存（不再弹确认框）
         self.profiles["profiles"][pid] = prof
         self._save_profiles()
         self._refresh_list()
@@ -1020,8 +1038,7 @@ class PiSwitchApp:
             return
         pid = self._id_by_index[sel[0]]
         prof = self.profiles["profiles"].get(pid, {})
-        if not messagebox.askyesno("确认删除", f"删除配置「{prof.get('name', pid)}」？"):
-            return
+        # 直接删除，不再弹确认框
         del self.profiles["profiles"][pid]
         if self.profiles.get("active") == pid:
             self.profiles["active"] = None
@@ -1188,9 +1205,7 @@ class PiSwitchApp:
             if not pid:
                 messagebox.showerror("缺少字段", "请先填写 Provider ID。")
                 return
-            if pid in self.profiles["profiles"] and \
-                    not messagebox.askyesno("覆盖", f"Provider ID「{pid}」已存在，要覆盖并激活吗？"):
-                return
+            # 已存在就直接覆盖并激活，不再弹确认框
             self.editing_id = pid
         if not self._save_with_id(self.editing_id):
             return
@@ -1774,10 +1789,7 @@ class PiSwitchApp:
         if not rows:
             messagebox.showinfo("导入", "没有可导入的模型。")
             return
-        if not messagebox.askyesno("导入模型",
-                                   f"将 {len(rows)} 个模型写入右侧「模型列表」？\n\n"
-                                   f"reasoning = {reasoning_flag}\n\n（会替换当前模型列表内容）"):
-            return
+        # 直接写入「模型列表」，不再弹确认框
         self.txt_models.delete("1.0", tk.END)
         self.txt_models.insert("1.0", json.dumps(rows, ensure_ascii=False, indent=2))
         self._refresh_model_dropdown()
