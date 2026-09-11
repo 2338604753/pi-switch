@@ -32,3 +32,7 @@ Pi-switch.exe.bak
 *.swp
 .DS_Store
 Thumbs.db
+
+# ---- 临时备份 ----
+*.bak
+*.bak-*
