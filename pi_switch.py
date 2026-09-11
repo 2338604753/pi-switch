@@ -515,11 +515,15 @@ class PiSwitchApp:
         r += 1
 
         ttk.Label(form, text="思考等级 (thinking)", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
-        self.cb_thinking = ttk.Combobox(form, values=THINKING_LEVELS, state="normal", width=10)
+        # 下拉框与说明文字放在同一个子 Frame 里左右排列，避免像以前那样两件控件
+        # 都 grid 到 column=1 导致说明文字压在 Combobox 上面把它挡住。
+        thkf = ttk.Frame(form)
+        thkf.grid(row=r, column=1, sticky="ew", pady=3)
+        self.cb_thinking = ttk.Combobox(thkf, values=THINKING_LEVELS, state="normal", width=10)
         self.cb_thinking.set("")
-        self.cb_thinking.grid(row=r, column=1, sticky="w", pady=3)
-        ttk.Label(form, text="(写 defaultThinkingLevel；非 off 会自动补 reasoning=true，xhigh/max 会自动补 thinkingLevelMap)",
-                  style="Dim.TLabel").grid(row=r, column=1, sticky="e", padx=4)
+        self.cb_thinking.pack(side="left")
+        ttk.Label(thkf, text="(留空则不改；非 off 会自动补 reasoning / thinkingLevelMap)",
+                  style="Dim.TLabel").pack(side="left", padx=(8, 4))
         r += 1
 
         # 模型列表 (JSON)
