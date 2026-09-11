@@ -1,11 +1,13 @@
 {
   "version": 1,
   "active": "my-provider",
+  "activeClaude": "my-claude",
   "theme": "black",
   "profiles": {
     "my-provider": {
       "name": "我的 Provider",
       "providerId": "my-provider",
+      "target": "pi",
       "kind": "custom",
       "baseUrl": "https://example.com/v1",
       "api": "openai-completions",
@@ -36,9 +38,23 @@
     "my-builtin": {
       "name": "内置 Provider (写入 auth.json)",
       "providerId": "openai",
+      "target": "pi",
       "kind": "builtin",
       "apiKey": "$OPENAI_API_KEY",
       "defaultModel": "gpt-4o"
+    },
+    "my-claude": {
+      "name": "Claude Code (Anthropic 兼容网关)",
+      "providerId": "my-claude",
+      "target": "claude",
+      "kind": "custom",
+      "baseUrl": "https://your-gateway.example.com",
+      "apiKey": "sk-REPLACE_WITH_YOUR_KEY",
+      "defaultModel": "claude-sonnet-4-5",
+      "claudeEnv": {
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4-5",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5"
+      }
     }
   }
 }

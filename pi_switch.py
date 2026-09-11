@@ -40,6 +40,11 @@ SETTINGS_PATH = os.path.join(AGENT_DIR, "settings.json")
 AUTH_PATH = os.path.join(AGENT_DIR, "auth.json")
 MODELS_PATH = os.path.join(AGENT_DIR, "models.json")
 
+# Claude Code (claude agent) 配置：通过 ~/.claude/settings.json 的 env 块设置
+# 例如 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_MODEL
+CLAUDE_DIR = os.path.join(os.path.expanduser("~"), ".claude")
+CLAUDE_SETTINGS_PATH = os.path.join(CLAUDE_DIR, "settings.json")
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 # 若被打包成 PyInstaller exe(_MEIPASS/临时目录)，则把配置写到 exe 旁边，保证能持久保存
 if getattr(sys, "frozen", False):
@@ -60,9 +65,22 @@ THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 # 见 pi docs/models.md “Thinking Level Map”。
 EXTENDED_THINKING_LEVELS = ["xhigh", "max"]
 
+# 配置目标：pi agent 或 Claude Code
+TARGETS = ["pi", "claude"]
+TARGET_LABELS = {"pi": "pi agent", "claude": "Claude Code"}
+
+# Claude Code 里由本工具管理的 env 键（其余键会原样保留）
+CLAUDE_MANAGED_KEYS = [
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+]
+
 # 新建 profile 时的模型模板。
 # 默认 reasoning=true：现在主流模型基本都支持思考，不支持的模型手动改成 false 即可。
-MODEL_TEMPLATE = '[{"id": "my-model", "name": "My Model", "reasoning": true, "input": ["text", "image"]}]'
+MODEL_TEMPLATE = ('[{"id": "my-model", "name": "My Model", "reasoning": true, '
+                  '"input": ["text", "image"], "contextWindow": 1048576, "maxTokens": 16384}]')
 
 # 兼容设置模板（新建 / 从没配过 compat 时显示）。
 # supportsDeveloperRole=false : 大多数 OpenAI 兼容中转不认 developer 角色，会直接 400，用 system 更稳。
@@ -77,6 +95,18 @@ COMPAT_TEMPLATE = json.dumps({
 # 所以这里伪装成 Chrome，否则 /models 或测试请求会被 403(Error 1010) 拦掉。
 BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+
+def api_root(baseurl):
+    """规范出 API 根地址：Base URL 未以版本号(/v1 等)结尾时自动补 /v1。
+    newapi/oneapi 类网关的接口都挂在 /v1/ 下（/v1/models、/v1/chat/completions），
+    直接拼 /models 会命中网关的网页前端，返回 HTML 导致 JSON 解析失败。
+    """
+    b = (baseurl or "").rstrip("/")
+    for suf in ("/v1", "/v1beta", "/v1beta1", "/v2", "/v3", "/v4"):
+        if b.endswith(suf):
+            return b
+    return b + "/v1"
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +227,7 @@ class PiSwitchApp:
         self.profiles = read_json(PROFILES_PATH, {"version": 1, "active": None, "profiles": {}})
         self.profiles.setdefault("version", 1)
         self.profiles.setdefault("active", None)
+        self.profiles.setdefault("activeClaude", None)
         self.profiles.setdefault("profiles", {})
         # 恢复上次使用的主题 (默认黑色)
         self.current_theme = self.profiles.get("theme", "black")
@@ -212,6 +243,8 @@ class PiSwitchApp:
 
         self._build_ui()
         self._refresh_list()
+        # 启动时若还没有 Claude 配置，则自动读取本机 ~/.claude/settings.json 生成一个
+        self._ensure_claude_profile()
 
         if self.profiles.get("active"):
             self._select_profile(self.profiles["active"])
@@ -319,6 +352,9 @@ class PiSwitchApp:
         if hasattr(self, "txt_compat"):
             self.txt_compat.configure(bg=C["bg_input"], fg=C["text"], insertbackground=C["text"],
                                       selectbackground=C["accent"], selectforeground=C["on_accent"])
+        if hasattr(self, "txt_claude_env"):
+            self.txt_claude_env.configure(bg=C["bg_input"], fg=C["text"], insertbackground=C["text"],
+                                          selectbackground=C["accent"], selectforeground=C["on_accent"])
 
     def _toggle_theme(self):
         """在 黑色 / 白色 主题间切换。"""
@@ -376,6 +412,15 @@ class PiSwitchApp:
         paned.add(left, weight=1)
 
         ttk.Label(left, text="配置文件列表", style="Section.TLabel").pack(anchor="w", padx=6, pady=(4, 6))
+        filt = ttk.Frame(left)
+        filt.pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Label(filt, text="目标筛选:", style="Dim.TLabel").pack(side="left")
+        # 默认筛选 pi（列表默认只显示 pi 配置）
+        self.target_filter_var = tk.StringVar(value="pi")
+        filter_cb = ttk.Combobox(filt, values=["pi", "claude", "全部"], state="readonly",
+                                 width=8, textvariable=self.target_filter_var)
+        filter_cb.pack(side="left", padx=4)
+        filter_cb.bind("<<ComboboxSelected>>", self._on_filter_change)
         lf = ttk.Frame(left)
         lf.pack(fill="both", expand=True, padx=6)
         self.listbox = tk.Listbox(lf, activestyle="none", font=("Consolas", 10), exportselection=False,
@@ -398,6 +443,7 @@ class PiSwitchApp:
         ttk.Button(btns, text="备份管理", command=self._open_backup_dir, width=9).grid(row=2, column=2, sticky="ew", padx=2, pady=(4, 0))
         ttk.Button(btns, text="批量导入", command=self._import_all, width=9).grid(row=3, column=0, columnspan=2, sticky="ew", padx=2, pady=(4, 0))
         ttk.Button(btns, text="打开配置", command=self._open_config_menu, width=9).grid(row=3, column=2, sticky="ew", padx=2, pady=(4, 0))
+        ttk.Button(btns, text="导入当前 Claude", command=self._capture_claude, width=23).grid(row=4, column=0, columnspan=3, sticky="ew", padx=2, pady=(4, 0))
 
         # ---- 右侧表单 ----
         right = ttk.Frame(paned)
@@ -408,6 +454,16 @@ class PiSwitchApp:
         form.columnconfigure(1, weight=1)
 
         r = 0
+        ttk.Label(form, text="目标 (Target)", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
+        tgtf = ttk.Frame(form)
+        tgtf.grid(row=r, column=1, sticky="w", pady=3)
+        self.target_var = tk.StringVar(value="pi")
+        ttk.Radiobutton(tgtf, text="pi agent", value="pi", variable=self.target_var,
+                        command=self._on_target_change).pack(side="left")
+        ttk.Radiobutton(tgtf, text="Claude Code", value="claude", variable=self.target_var,
+                        command=self._on_target_change).pack(side="left", padx=8)
+        r += 1
+
         ttk.Label(form, text="名称 (Name)", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
         self.e_name = ttk.Entry(form)
         self.e_name.grid(row=r, column=1, sticky="ew", pady=3)
@@ -422,8 +478,10 @@ class PiSwitchApp:
         kindf = ttk.Frame(form)
         kindf.grid(row=r, column=1, sticky="w", pady=3)
         self.kind_var = tk.StringVar(value="custom")
-        ttk.Radiobutton(kindf, text="自定义 provider (写 models.json)", value="custom", variable=self.kind_var, command=self._toggle_kind).pack(side="left")
-        ttk.Radiobutton(kindf, text="内置 provider (写 auth.json)", value="builtin", variable=self.kind_var, command=self._toggle_kind).pack(side="left", padx=8)
+        self.rb_kind_custom = ttk.Radiobutton(kindf, text="自定义 provider (写 models.json)", value="custom", variable=self.kind_var, command=self._toggle_kind)
+        self.rb_kind_custom.pack(side="left")
+        self.rb_kind_builtin = ttk.Radiobutton(kindf, text="内置 provider (写 auth.json)", value="builtin", variable=self.kind_var, command=self._toggle_kind)
+        self.rb_kind_builtin.pack(side="left", padx=8)
         r += 1
 
         ttk.Label(form, text="Base URL", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="w", pady=3)
@@ -503,6 +561,23 @@ class PiSwitchApp:
         sc.grid(row=0, column=1, sticky="ns")
         r += 1
 
+        # Claude Code 额外环境变量 (JSON) —— 仅 target=claude 时生效
+        ttk.Label(form, text="Claude 额外环境变量 env (JSON, 可选)", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, sticky="nw", pady=(6, 2))
+        r += 1
+        clf = ttk.Frame(form)
+        clf.grid(row=r, column=0, columnspan=2, sticky="nsew")
+        form.rowconfigure(r, weight=1)
+        clf.columnconfigure(0, weight=1)
+        self.txt_claude_env = tk.Text(clf, height=3, font=("Consolas", 9), wrap="none", undo=True,
+                                      bg=C["bg_input"], fg=C["text"], insertbackground=C["text"],
+                                      selectbackground=C["accent"], selectforeground=C["on_accent"],
+                                      relief="flat", bd=0, highlightthickness=0)
+        sce = ttk.Scrollbar(clf, orient="vertical", command=self.txt_claude_env.yview)
+        self.txt_claude_env.configure(yscrollcommand=sce.set)
+        self.txt_claude_env.grid(row=0, column=0, sticky="nsew")
+        sce.grid(row=0, column=1, sticky="ns")
+        r += 1
+
         # 底栏按钮
         act = ttk.Frame(form)
         act.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(10, 4))
@@ -510,6 +585,7 @@ class PiSwitchApp:
         ttk.Button(act, text="激活并应用 (Activate)", command=self._activate_editing, width=22, style="Accent.TButton").pack(side="left", padx=2)
         ttk.Button(act, text="重置", command=self._reset_form, width=10).pack(side="right", padx=2)
 
+        self._toggle_kind()
         self._refresh_status()
 
     # ------------------------------------------------------------------
@@ -523,9 +599,22 @@ class PiSwitchApp:
         active_name = ""
         if active and active in self.profiles["profiles"]:
             active_name = self.profiles["profiles"][active].get("name", active)
+
+        cst = read_json(CLAUDE_SETTINGS_PATH, {})
+        cenv = cst.get("env", {}) if isinstance(cst, dict) else {}
+        if not isinstance(cenv, dict):
+            cenv = {}
+        cmodel = cenv.get("ANTHROPIC_MODEL") or "?"
+        cactive = self.profiles.get("activeClaude")
+        cactive_name = ""
+        if cactive and cactive in self.profiles["profiles"]:
+            cactive_name = self.profiles["profiles"][cactive].get("name", cactive)
+
         self.status_var.set(
-            f"当前 pi 激活: {provider} / {model}"
-            + (f"    (对应 profile: {active_name})" if active_name else "")
+            f"pi: {provider} / {model}"
+            + (f" ({active_name})" if active_name else "")
+            + f"     |     Claude: {cmodel}"
+            + (f" ({cactive_name})" if cactive_name else "")
         )
 
     def _select_row(self, pid):
@@ -598,11 +687,26 @@ class PiSwitchApp:
         self.listbox.delete(0, tk.END)
         self._id_by_index = {}
         active = self.profiles.get("active")
-        for i, (pid, prof) in enumerate(self.profiles["profiles"].items()):
+        active_claude = self.profiles.get("activeClaude")
+        flt = self.target_filter_var.get() if hasattr(self, "target_filter_var") else "pi"
+        i = 0
+        for pid, prof in self.profiles["profiles"].items():
+            tgt = prof.get("target", "pi")
+            if flt in ("pi", "claude") and tgt != flt:
+                continue
             name = prof.get("name") or pid
-            mark = "● " if pid == active else "   "
-            self.listbox.insert(tk.END, f"{mark}{name}   [{pid}]")
+            is_active = (pid == active_claude) if tgt == "claude" else (pid == active)
+            mark = "● " if is_active else "   "
+            tag = "[claude]" if tgt == "claude" else "[pi]    "
+            self.listbox.insert(tk.END, f"{mark}{tag} {name}   [{pid}]")
             self._id_by_index[i] = pid
+            i += 1
+
+    def _on_filter_change(self, _event=None):
+        # 切到 claude 筛选时，若还没有 Claude 配置，则读取本机 Claude 配置生成一个
+        if self.target_filter_var.get() == "claude":
+            self._ensure_claude_profile()
+        self._refresh_list()
 
     def _on_list_select(self, _event=None):
         sel = self.listbox.curselection()
@@ -620,9 +724,13 @@ class PiSwitchApp:
         self._fill_form(prof)
 
     def _fill_form(self, prof):
+        self.target_var.set(prof.get("target", "pi"))
+        self.kind_var.set(prof.get("kind", "custom"))
+        # 文本框可能处于 disabled 状态，先临时解锁再写入，最后再按目标/类型恢复
+        for w in (self.txt_models, self.txt_compat, self.txt_claude_env):
+            w.configure(state="normal")
         self.e_name.delete(0, tk.END); self.e_name.insert(0, prof.get("name", ""))
         self.e_provider.delete(0, tk.END); self.e_provider.insert(0, prof.get("providerId", ""))
-        self.kind_var.set(prof.get("kind", "custom"))
         self.e_baseurl.delete(0, tk.END); self.e_baseurl.insert(0, prof.get("baseUrl", ""))
         self.cb_api.set(prof.get("api", API_CHOICES[0]))
         self.e_key.delete(0, tk.END); self.e_key.insert(0, prof.get("apiKey", ""))
@@ -646,11 +754,20 @@ class PiSwitchApp:
             self.txt_compat.insert("1.0", "{}")
         else:
             self.txt_compat.insert("1.0", COMPAT_TEMPLATE)
+        env = prof.get("claudeEnv")
+        self.txt_claude_env.delete("1.0", tk.END)
+        if env:
+            self.txt_claude_env.insert("1.0", json.dumps(env, ensure_ascii=False, indent=2))
+        else:
+            self.txt_claude_env.insert("1.0", COMPAT_TEMPLATE)
         self._toggle_kind()
         self._refresh_model_dropdown()
 
     def _reset_form(self):
         self.editing_id = None
+        self.target_var.set("pi")
+        for w in (self.txt_models, self.txt_compat, self.txt_claude_env):
+            w.configure(state="normal")
         self.e_name.delete(0, tk.END)
         self.e_provider.delete(0, tk.END)
         self.kind_var.set("custom")
@@ -661,14 +778,43 @@ class PiSwitchApp:
         self.cb_thinking.set("")
         self.txt_models.delete("1.0", tk.END); self.txt_models.insert("1.0", MODEL_TEMPLATE)
         self.txt_compat.delete("1.0", tk.END); self.txt_compat.insert("1.0", COMPAT_TEMPLATE)
+        self.txt_claude_env.delete("1.0", tk.END); self.txt_claude_env.insert("1.0", COMPAT_TEMPLATE)
         self._toggle_kind()
 
     def _toggle_key_visibility(self):
         self.key_visible = not self.key_visible
         self.e_key.configure(show="" if self.key_visible else "*")
 
+    def _on_target_change(self):
+        target = self.target_var.get()
+        # 先按新目标切换控件可用状态，否则写入被禁用的文本框会无效
+        self._toggle_kind()
+        if target == "claude":
+            stored = None
+            if self.editing_id is not None:
+                stored = self.profiles["profiles"].get(self.editing_id, {}).get("target")
+            # 新建配置，或把 pi 配置切换成 Claude 时，默认读取本机 Claude 配置
+            if stored != "claude":
+                self._load_current_claude_into_form()
+
     def _toggle_kind(self):
+        target = self.target_var.get()
         kind = self.kind_var.get()
+        # 内置/自定义 provider 是 pi 专有概念；Claude Code 走 settings.json 的 env
+        try:
+            rb_state = "disabled" if target == "claude" else "normal"
+            self.rb_kind_custom.configure(state=rb_state)
+            self.rb_kind_builtin.configure(state=rb_state)
+        except Exception:
+            pass
+        if target == "claude":
+            self.e_baseurl.configure(state="normal")
+            self.cb_api.configure(state="disabled")
+            self.txt_models.configure(state="normal")
+            self.txt_compat.configure(state="disabled")
+            self.txt_claude_env.configure(state="normal")
+            return
+        self.txt_claude_env.configure(state="disabled")
         state = "normal" if kind == "custom" else "disabled"
         self.e_baseurl.configure(state=state)
         self.cb_api.configure(state="readonly" if kind == "custom" else "disabled")
@@ -687,14 +833,24 @@ class PiSwitchApp:
     # 采集表单 -> 字典
     # ------------------------------------------------------------------
     def _collect_form(self):
+        target = self.target_var.get()
         kind = self.kind_var.get()
         prof = {
             "name": self.e_name.get().strip() or self.e_provider.get().strip() or "未命名",
             "providerId": self.e_provider.get().strip(),
+            "target": target,
             "kind": kind,
         }
+        if target == "claude":
+            prof["baseUrl"] = self.e_baseurl.get().strip()
+            models = self._clean_models(parse_json_text(self.txt_models.get("1.0", tk.END)))
+            if models:
+                prof["models"] = models
+            env = parse_json_text(self.txt_claude_env.get("1.0", tk.END))
+            if env:
+                prof["claudeEnv"] = env
         # 自定义
-        if kind == "custom":
+        elif kind == "custom":
             prof["baseUrl"] = self.e_baseurl.get().strip()
             prof["api"] = self.cb_api.get().strip() or API_CHOICES[0]
             models = self._clean_models(parse_json_text(self.txt_models.get("1.0", tk.END)))
@@ -802,16 +958,22 @@ class PiSwitchApp:
         try:
             prof = self._collect_form()
         except ValueError as e:
-            messagebox.showerror("JSON 错误", f"模型列表或 compat 不是合法 JSON：\n\n{e}")
+            messagebox.showerror("JSON 错误", f"模型列表 / compat / env 不是合法 JSON：\n\n{e}")
             return False
-        sync_notes = self._sync_reasoning(prof)
-        if not prof["providerId"]:
-            messagebox.showerror("缺少字段", "Provider ID 不能为空。")
-            return False
-        if prof["kind"] == "custom" and prof.get("baseUrl"):
-            if not prof["baseUrl"].startswith(("http://", "https://")):
-                messagebox.showerror("字段错误", "Base URL 需要以 http:// 或 https:// 开头。")
+        # 思考等级与 reasoning/thinkingLevelMap 的自动同步只对 pi 目标有意义
+        sync_notes = [] if prof.get("target") == "claude" else self._sync_reasoning(prof)
+        if prof.get("target") == "claude":
+            if not prof.get("baseUrl"):
+                messagebox.showerror("缺少字段", "Claude Code 需要填写 Base URL（写 ANTHROPIC_BASE_URL）。")
                 return False
+        else:
+            if not prof["providerId"]:
+                messagebox.showerror("缺少字段", "Provider ID 不能为空。")
+                return False
+            if prof["kind"] == "custom" and prof.get("baseUrl"):
+                if not prof["baseUrl"].startswith(("http://", "https://")):
+                    messagebox.showerror("字段错误", "Base URL 需要以 http:// 或 https:// 开头。")
+                    return False
         if not prof.get("apiKey"):
             if not messagebox.askyesno("提示", "API Key 为空，仍要保存吗？"):
                 return False
@@ -830,8 +992,12 @@ class PiSwitchApp:
 
     def _save_editing(self):
         if self.editing_id is None:
-            # 新建：用 providerId 作为 id
+            # 新建：用 providerId 作为 id（Claude Code 可不填，默认用 claude）
             pid = self.e_provider.get().strip()
+            if not pid and self.target_var.get() == "claude":
+                pid = "claude"
+                self.e_provider.delete(0, tk.END)
+                self.e_provider.insert(0, pid)
             if not pid:
                 messagebox.showerror("缺少字段", "请先填写 Provider ID。")
                 return
@@ -855,6 +1021,8 @@ class PiSwitchApp:
         del self.profiles["profiles"][pid]
         if self.profiles.get("active") == pid:
             self.profiles["active"] = None
+        if self.profiles.get("activeClaude") == pid:
+            self.profiles["activeClaude"] = None
         self._save_profiles()
         self.editing_id = None
         self._reset_form()
@@ -869,7 +1037,9 @@ class PiSwitchApp:
     # 激活 (写入 pi 配置)
     # ------------------------------------------------------------------
     def _do_activate(self, pid, prof):
-        """把 profile 写入 pi 配置文件，返回错误列表。"""
+        """把 profile 写入对应 agent 的配置文件，返回错误列表。"""
+        if prof.get("target") == "claude":
+            return self._do_activate_claude(pid, prof)
         errors = []
         kind = prof.get("kind", "custom")
         provider = prof.get("providerId")
@@ -940,6 +1110,47 @@ class PiSwitchApp:
             self._save_profiles()
         return errors
 
+    def _do_activate_claude(self, pid, prof):
+        """把 profile 写入 Claude Code 的 ~/.claude/settings.json (env 块)。"""
+        errors = []
+        try:
+            os.makedirs(CLAUDE_DIR, exist_ok=True)
+        except Exception as e:
+            errors.append(f"无法创建 Claude 配置目录 {CLAUDE_DIR}：{e}")
+
+        st = read_json(CLAUDE_SETTINGS_PATH, {})
+        if not isinstance(st, dict):
+            st = {}
+        env = st.get("env")
+        if not isinstance(env, dict):
+            env = {}
+
+        base = prof.get("baseUrl")
+        if base:
+            env["ANTHROPIC_BASE_URL"] = base
+        key = prof.get("apiKey")
+        if key:
+            env["ANTHROPIC_AUTH_TOKEN"] = key
+        model = prof.get("defaultModel")
+        if model:
+            env["ANTHROPIC_MODEL"] = model
+        extra = prof.get("claudeEnv")
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                env[str(k)] = v
+
+        st["env"] = env
+        backup_file(CLAUDE_SETTINGS_PATH)
+        try:
+            write_json(CLAUDE_SETTINGS_PATH, st)
+        except Exception as e:
+            errors.append(f"写入 Claude settings.json 失败：{e}")
+
+        if not errors:
+            self.profiles["activeClaude"] = pid
+            self._save_profiles()
+        return errors
+
     def _activate_selected(self):
         sel = self.listbox.curselection()
         if not sel:
@@ -949,21 +1160,27 @@ class PiSwitchApp:
         prof = self.profiles["profiles"].get(pid)
         if not prof:
             return
+        target_label = TARGET_LABELS.get(prof.get("target", "pi"), "pi agent")
         # 直接执行，不再弹确认框；但激活前仍跑一遍同步，避免旧 profile 缺 thinkingLevelMap
-        self._sync_reasoning(prof)
-        self._save_profiles()
+        if prof.get("target") != "claude":
+            self._sync_reasoning(prof)
+            self._save_profiles()
         errors = self._do_activate(pid, prof)
         if errors:
             messagebox.showerror("激活失败", "\n".join(errors))
         else:
             self._refresh_list()
             self._refresh_status()
-            self.status_var.set(f"已激活：{prof.get('name', pid)}（已写入 pi 配置，重启 pi 后生效）")
+            self.status_var.set(f"已激活：{prof.get('name', pid)}（{target_label}，重启后生效）")
 
     def _activate_editing(self):
         # 先保存当前编辑内容，再激活
         if self.editing_id is None:
             pid = self.e_provider.get().strip()
+            if not pid and self.target_var.get() == "claude":
+                pid = "claude"
+                self.e_provider.delete(0, tk.END)
+                self.e_provider.insert(0, pid)
             if not pid:
                 messagebox.showerror("缺少字段", "请先填写 Provider ID。")
                 return
@@ -981,7 +1198,8 @@ class PiSwitchApp:
         else:
             self._refresh_list()
             self._refresh_status()
-            self.status_var.set(f"已激活：{prof.get('name', self.editing_id)}（已写入 pi 配置，重启 pi 后生效）")
+            edit_label = TARGET_LABELS.get(prof.get("target", "pi"), "pi agent")
+            self.status_var.set(f"已激活：{prof.get('name', self.editing_id)}（{edit_label}，重启后生效）")
 
     # ------------------------------------------------------------------
     # 从 pi 当前配置导入
@@ -1004,6 +1222,7 @@ class PiSwitchApp:
             prof = {
                 "name": prov.get("name") or provider,
                 "providerId": provider,
+                "target": "pi",
                 "kind": "custom",
                 "baseUrl": prov.get("baseUrl", ""),
                 "api": prov.get("api", API_CHOICES[0]),
@@ -1020,6 +1239,7 @@ class PiSwitchApp:
             prof = {
                 "name": provider,
                 "providerId": provider,
+                "target": "pi",
                 "kind": "builtin",
                 "apiKey": (entry.get("key") if isinstance(entry, dict) else "") or "",
                 "defaultModel": default_model,
@@ -1038,6 +1258,98 @@ class PiSwitchApp:
                 self.listbox.selection_set(i)
                 break
         self.status_var.set(f"已从 pi 导入当前配置：{provider} / {default_model}")
+
+    def _capture_claude(self):
+        """读取 ~/.claude/settings.json 的 env，导入成一个 Claude profile。"""
+        st = read_json(CLAUDE_SETTINGS_PATH, {})
+        env = st.get("env", {}) if isinstance(st, dict) else {}
+        if not isinstance(env, dict):
+            env = {}
+        if not env:
+            messagebox.showinfo("提示", f"{CLAUDE_SETTINGS_PATH} 里没有 env 配置，无法导入。")
+            return
+        pid = "claude"
+        n = 1
+        while pid in self.profiles["profiles"]:
+            n += 1
+            pid = f"claude{n}"
+        prof = {
+            "name": "Claude Code" if n == 1 else f"Claude Code{n}",
+            "providerId": pid,
+            "target": "claude",
+            "kind": "custom",
+            "baseUrl": env.get("ANTHROPIC_BASE_URL", ""),
+            "apiKey": env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY") or "",
+            "defaultModel": env.get("ANTHROPIC_MODEL", ""),
+            "claudeEnv": {k: v for k, v in env.items() if k not in CLAUDE_MANAGED_KEYS},
+        }
+        self.profiles["profiles"][pid] = prof
+        self._save_profiles()
+        self._refresh_list()
+        self.editing_id = pid
+        self._fill_form(prof)
+        for i, p in enumerate(self._id_by_index.values()):
+            if p == pid:
+                self.listbox.selection_clear(0, tk.END)
+                self.listbox.selection_set(i)
+                break
+        self.status_var.set(f"已从 Claude 导入当前配置：{prof.get('defaultModel') or '(未设置模型)'}")
+
+    def _load_current_claude_into_form(self):
+        """把当前电脑的 ~/.claude/settings.json 的 env 读取到右侧表单（Claude 目标）。
+
+        返回是否成功读到配置。只填写 Base URL / API Key / 默认模型 / 额外 env，
+        不会改动 pi 专有的字段。
+        """
+        st = read_json(CLAUDE_SETTINGS_PATH, {})
+        env = st.get("env", {}) if isinstance(st, dict) else {}
+        if not isinstance(env, dict):
+            env = {}
+        if not env:
+            self.status_var.set(f"本机未找到 Claude 配置：{CLAUDE_SETTINGS_PATH}")
+            return False
+        base = env.get("ANTHROPIC_BASE_URL", "")
+        key = env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY") or ""
+        model = env.get("ANTHROPIC_MODEL", "")
+        extra = {k: v for k, v in env.items() if k not in CLAUDE_MANAGED_KEYS}
+        if base:
+            self.e_baseurl.delete(0, tk.END); self.e_baseurl.insert(0, base)
+        if key:
+            self.e_key.delete(0, tk.END); self.e_key.insert(0, key)
+        if model:
+            self.cb_model.set(model)
+        self.txt_claude_env.configure(state="normal")
+        self.txt_claude_env.delete("1.0", tk.END)
+        self.txt_claude_env.insert(
+            "1.0", json.dumps(extra, ensure_ascii=False, indent=2) if extra else COMPAT_TEMPLATE)
+        self.status_var.set(f"已读取本机 Claude 配置：{CLAUDE_SETTINGS_PATH}")
+        return True
+
+    def _ensure_claude_profile(self):
+        """启动时：若还没有任何 Claude 目标配置，则从本机 Claude 配置自动生成一个。"""
+        if any(p.get("target") == "claude" for p in self.profiles["profiles"].values()):
+            return
+        st = read_json(CLAUDE_SETTINGS_PATH, {})
+        env = st.get("env", {}) if isinstance(st, dict) else {}
+        if not isinstance(env, dict) or not env:
+            return
+        pid = "claude"
+        n = 1
+        while pid in self.profiles["profiles"]:
+            n += 1
+            pid = f"claude{n}"
+        self.profiles["profiles"][pid] = {
+            "name": "Claude Code" if n == 1 else f"Claude Code{n}",
+            "providerId": pid,
+            "target": "claude",
+            "kind": "custom",
+            "baseUrl": env.get("ANTHROPIC_BASE_URL", ""),
+            "apiKey": env.get("ANTHROPIC_AUTH_TOKEN") or env.get("ANTHROPIC_API_KEY") or "",
+            "defaultModel": env.get("ANTHROPIC_MODEL", ""),
+            "claudeEnv": {k: v for k, v in env.items() if k not in CLAUDE_MANAGED_KEYS},
+        }
+        self._save_profiles()
+        self._refresh_list()
 
     # ------------------------------------------------------------------
     # 批量导入 / 打开配置文件 / 模型清理
@@ -1070,6 +1382,7 @@ class PiSwitchApp:
             prof = {
                 "name": prov.get("name") or pid,
                 "providerId": pid,
+                "target": "pi",
                 "kind": "custom",
                 "baseUrl": prov.get("baseUrl", ""),
                 "api": prov.get("api", API_CHOICES[0]),
@@ -1096,6 +1409,7 @@ class PiSwitchApp:
                 prof = {
                     "name": pid,
                     "providerId": pid,
+                    "target": "pi",
                     "kind": "builtin",
                     "apiKey": cred.get("key", ""),
                     "defaultModel": "",
@@ -1116,6 +1430,7 @@ class PiSwitchApp:
         menu.add_command(label="settings.json", command=lambda: self._open_file(SETTINGS_PATH))
         menu.add_command(label="models.json", command=lambda: self._open_file(MODELS_PATH))
         menu.add_command(label="auth.json", command=lambda: self._open_file(AUTH_PATH))
+        menu.add_command(label="Claude settings.json", command=lambda: self._open_file(CLAUDE_SETTINGS_PATH))
         menu.add_command(label="profiles.json (本工具)", command=lambda: self._open_file(PROFILES_PATH))
         menu.add_separator()
         menu.add_command(label="打开备份目录", command=self._open_backup_dir)
@@ -1228,7 +1543,7 @@ class PiSwitchApp:
         loading = ttk.Frame(win)
         loading.pack(fill="both", expand=True)
         ttk.Label(loading, text="正在获取模型…", font=("Segoe UI", 12, "bold")).pack(pady=24)
-        ttk.Label(loading, text=f"{baseurl.rstrip('/')}/models", font=("Consolas", 9), foreground=self._theme["text_dim"]).pack()
+        ttk.Label(loading, text=f"{api_root(baseurl)}/models", font=("Consolas", 9), foreground=self._theme["text_dim"]).pack()
         ttk.Button(loading, text="关闭", command=win.destroy).pack(pady=16)
 
         threading.Thread(target=self._fetch_models_worker,
@@ -1267,7 +1582,7 @@ class PiSwitchApp:
             headers["anthropic-version"] = "2023-06-01"
         else:
             headers["Authorization"] = f"Bearer {apikey}"
-        req = urllib.request.Request(f"{baseurl}/models", headers=headers, method="GET")
+        req = urllib.request.Request(f"{api_root(baseurl)}/models", headers=headers, method="GET")
         try:
             with urllib.request.urlopen(req, timeout=20, context=self._ssl_ctx()) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -1390,13 +1705,13 @@ class PiSwitchApp:
         headers = {"Content-Type": "application/json", "User-Agent": BROWSER_UA}
         payload = None
         if api == "anthropic-messages":
-            url = f"{baseurl}/messages"
+            url = f"{api_root(baseurl)}/messages"
             headers["x-api-key"] = apikey
             headers["anthropic-version"] = "2023-06-01"
             payload = {"model": mid, "max_tokens": 16,
                        "messages": [{"role": "user", "content": "Hello"}]}
         elif api == "openai-responses":
-            url = f"{baseurl}/responses"
+            url = f"{api_root(baseurl)}/responses"
             headers["Authorization"] = f"Bearer {apikey}"
             payload = {"model": mid, "input": "Hello", "max_output_tokens": 16}
         elif api == "google-generative-ai":
@@ -1404,7 +1719,7 @@ class PiSwitchApp:
             headers["Authorization"] = f"Bearer {apikey}"
             payload = {"contents": [{"parts": [{"text": "Hello"}]}]}
         else:  # openai-completions
-            url = f"{baseurl}/chat/completions"
+            url = f"{api_root(baseurl)}/chat/completions"
             headers["Authorization"] = f"Bearer {apikey}"
             payload = {"model": mid, "messages": [{"role": "user", "content": "Hello"}],
                        "max_tokens": 16}

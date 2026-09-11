@@ -1,7 +1,7 @@
 # Pi-switch
 
-一个为 [pi coding agent](https://pi.dev) 设计的“配置切换”小工具（类似 ccswitch）。
-用来快速切换不同的 **模型（model） / API Key / Base URL / 思考等级**，一键写入 pi 的配置文件。
+一个为 [pi coding agent](https://pi.dev) 与 **Claude Code** 设计的“配置切换”小工具（类似 ccswitch）。
+用来快速切换不同的 **模型（model） / API Key / Base URL / 思考等级**，一键写入对应 agent 的配置文件。
 
 > 运行环境：Windows + Python 3，带 tkinter（Python 官方安装包默认自带的图形库，无需额外安装）。
 
@@ -14,7 +14,7 @@
 前往 GitHub Releases 下载，解压后双击 `Pi-switch.exe` 即可运行，无需安装 Python：
 
 - 最新版本：<https://github.com/2338604753/pi-switch/releases>
-- 直接下载：<https://github.com/2338604753/pi-switch/releases/download/v1.1.0/Pi-switch.exe>
+- 直接下载：<https://github.com/2338604753/pi-switch/releases/download/v1.1.1/Pi-switch.exe>
 
 **方式二：从源码运行**
 
@@ -30,8 +30,10 @@ python pi_switch.py
 
 ## 有什么作用
 
-你每次手动改 `~/.pi/agent` 下的配置很麻烦，这个工具把常用的配置做成一个个 **profile（配置文件）**，
-点一下「激活」，就会自动备份并写入 pi 真正读取的文件：
+你每次手动改 `~/.pi/agent`（或 Claude Code 的 `~/.claude`）下的配置很麻烦，这个工具把常用的配置做成一个个 **profile（配置文件）**，
+每个 profile 可以选择 **目标（Target）**：`pi agent` 或 `Claude Code`。点一下「激活」，就会自动备份并写入对应 agent 真正读取的文件：
+
+**目标 = pi agent：**
 
 | pi 配置文件 | 作用 |
 |-------------|------|
@@ -39,20 +41,27 @@ python pi_switch.py
 | `~/.pi/agent/models.json` | 自定义 provider（`baseUrl` / `api` / `apiKey` / `compat` / `models`） |
 | `~/.pi/agent/auth.json` | 内置 provider 的 API key（如 openai、anthropic、opencode 等） |
 
-激活后，下次启动 pi（或打开 `/model` 选择）即生效。
+**目标 = Claude Code：**
+
+| Claude 配置文件 | 作用 |
+|-----------------|------|
+| `~/.claude/settings.json` | `env` 块里的 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL`，以及任意额外环境变量（如 `ANTHROPIC_DEFAULT_SONNET_MODEL`） |
+
+激活后，下次启动对应 agent 即生效（Claude Code 需重开终端 / 新会话）。
 
 ---
 
 ## 怎么用
 
 1. 双击 **`启动Pi-switch.bat`**（或命令行运行 `python pi_switch.py`）。
-2. **左侧**是配置文件列表。可以用「新建」创建，或先用「批量导入」把已存在的 provider 全部导进来。
+2. **左侧**是配置文件列表（每项带 `[pi]` / `[claude]` 标签，上方「目标筛选」**默认为 `pi`**，切到 `claude` 即可查看/管理 Claude 配置）。可以用「新建」创建，或先用「批量导入」把已存在的 pi provider 全部导进来。
 3. **右侧**表单里填写/修改：
+   - **目标（Target）**：`pi agent` 或 `Claude Code`
    - 名称、Provider ID
-   - 类型：**自定义 provider**（写 `models.json`）或 **内置 provider**（写 `auth.json`）
+   - pi 目标：类型选 **自定义 provider**（写 `models.json`）或 **内置 provider**（写 `auth.json`）
    - Base URL、API 类型、API Key、默认模型、思考等级
-   - 模型列表（JSON）、兼容设置 compat（JSON）
-4. 点 **「保存配置」** 存到本地，或点 **「激活并应用」** 直接写入 pi 配置。
+   - 模型列表（JSON）、pi 的兼容设置 compat（JSON）、Claude 的额外环境变量 env（JSON）
+4. 点 **「保存配置」** 存到本地，或点 **「激活并应用」** 直接写入对应 agent 配置。
 
 ---
 
@@ -120,6 +129,29 @@ python pi_switch.py
 
 ---
 
+## Claude Code 支持
+
+新建/编辑 profile 时把 **目标（Target）** 选为 `Claude Code`，表单会自动切换为该目标需要的字段：
+
+| 表单字段 | 写入 `~/.claude/settings.json` 的 env 键 |
+|----------|------------------------------------------|
+| Base URL | `ANTHROPIC_BASE_URL` |
+| API Key | `ANTHROPIC_AUTH_TOKEN`（也支持 `$环境变量` / `!命令` 语法） |
+| 默认模型 (defaultModel) | `ANTHROPIC_MODEL` |
+| Claude 额外环境变量 env (JSON) | 原样合并进 `env`，可写 `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL` / `DISABLE_AUTOUPDATER` 等 |
+
+要点：
+
+- **默认目标为 `pi agent`**；把目标切到 `Claude Code` 时，会**自动读取本机 `~/.claude/settings.json`** 填入表单（新建配置、或把 pi 配置改成 Claude 时）。
+- **启动时若还没有任何 Claude 配置**，会自动从本机 `~/.claude/settings.json` 生成一个「Claude Code」配置项（不会自动激活，不影响 pi）。
+- 激活时只覆盖上面这些键，`settings.json` 里**其它字段（如 `model`、`hooks`）和未列出的 env 键都会原样保留**。
+- 「获取模型」「测试」同样适用于 Claude 目标（走 `{baseUrl}/models` 与 Anthropic `/messages`）；获取到的模型同样是 1M 上下文、支持图片/文本，**复制**配置也会完整保留这些字段。
+- 点 **「导入当前 Claude」** 可随时把本机 `~/.claude/settings.json` 重新导入成一个新 profile。
+- `api` / `compat` / `kind` 是 pi 专有概念，Claude 目标下会自动禁用。
+- 思考等级（thinking）在 Claude Code 里由 `MAX_THINKING_TOKENS` 控制，可写在「额外环境变量」里。
+
+---
+
 ## 备份与恢复
 
 每次「激活」前都会把将要修改的 pi 配置文件备份到本目录的 `backup` 文件夹（带时间戳）。
@@ -138,9 +170,10 @@ python pi_switch.py
 | 激活 | 把选中的配置应用到 pi（先备份再写入，同样不弹确认框） |
 | 删除 | 删除选中的配置 |
 | 导入当前 | 读取 pi 当前 `defaultProvider/defaultModel`，导入成配置 |
-| 批量导入 | 扫描 `models.json` + `auth.json`，把所有 provider 一次性导入 |
+| 导入当前 Claude | 读取 `~/.claude/settings.json` 的 env，导入成 Claude 配置 |
+| 批量导入 | 扫描 pi 的 `models.json` + `auth.json`，把所有 provider 一次性导入 |
 | 备份管理 | 打开备份目录 |
-| 打开配置 | 直接打开 pi 的 settings/models/auth/profiles 文件 |
+| 打开配置 | 直接打开 pi 的 settings/models/auth、Claude 的 settings、以及 profiles 文件 |
 | ↻ 刷新当前配置 | 重新从磁盘读取 `profiles.json` 与 pi 配置，刷新列表并重填右侧表单 |
 
 ---
@@ -149,7 +182,7 @@ python pi_switch.py
 
 本工具的配置保存在 **`profiles.json`**（与 `pi_switch.py` 同目录），与 pi 自身配置互不干扰。
 
-- 本工具写配置文件：`~/.pi/agent/`
+- 本工具写配置文件：`~/.pi/agent/` 与 `~/.claude/settings.json`
 - 本工具本地配置：`./profiles.json`
 - 备份目录：`./backup/`
 
