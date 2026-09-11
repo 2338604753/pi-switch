@@ -14,7 +14,7 @@
 前往 GitHub Releases 下载，解压后双击 `Pi-switch.exe` 即可运行，无需安装 Python：
 
 - 最新版本：<https://github.com/2338604753/pi-switch/releases>
-- 直接下载：<https://github.com/2338604753/pi-switch/releases/download/v1.1.1/Pi-switch.exe>
+- 直接下载：<https://github.com/2338604753/pi-switch/releases/download/v1.1.2/Pi-switch.exe>
 
 **方式二：从源码运行**
 
@@ -249,6 +249,16 @@ dist/Pi-switch.exe
   "thinkingLevelMap": { "xhigh": "xhigh", "max": "max" }
   ```
   然后「保存配置」→「激活并应用」，**重启 pi**，再在 `/thinking` 里选一次档位即可（会话内已有档位要重新选）。
+- **「思考等级」选了 `off`，pi 里却还在思考**：
+  这是 v1.1.1 及更早版本的 bug（v1.1.2 已修）。pi 对 `off` 的默认行为是「干脆不发 `reasoning_effort`」，
+  而部分中转（如 `pdai.hi66.cc`）在不传该参数时默认是**开启**思考的，于是看起来关掉了、其实没关。
+  v1.1.2 起保存/激活会自动补上映射；旧版或手写配置时，在「模型列表 (JSON)」里给模型加：
+  ```json
+  "thinkingLevelMap": { "off": "none" }
+  ```
+  可以和 `xhigh` / `max` 并存：`{ "off": "none", "xhigh": "xhigh", "max": "max" }`。
+- **「思考等级」下拉框只露出半个、右边有文字压着**：
+  这是 v1.1.1 及更早版本的界面 bug（v1.1.2 已修）：下拉框与说明文字都 grid 到同一列导致的。
 - **在外部改了 `profiles.json`，点「刷新当前配置」没反应**：
   这也是 v1.0.0 的 bug（已修）：旧版该按钮只刷新顶部状态文字，不重载表单。v1.1.0 起会真正重新读取并重填表单。
 - **激活后 pi 里看不到模型**：检查模型列表里的 `id` 是否真实存在，`baseUrl` 是否正确。
@@ -261,6 +271,27 @@ dist/Pi-switch.exe
 ---
 
 ## 更新日志
+
+### v1.1.2
+
+修复 pi 里 `off` 档关不掉思考，去掉最后几个确认弹窗，并支持 Claude Code 目标：
+
+- **修复 `off` 档实际没关掉思考**：pi 对 `thinking=off` 的默认行为是「索性不发 `reasoning_effort`」，
+  而不少中转（如 `pdai.hi66.cc`）在不传该参数时默认是**开启**思考的，于是切到 `off` 看起来生效、
+  实际仍在思考。现在保存/激活会自动给模型补 `thinkingLevelMap.off = "none"`，
+  pi 在 `off` 档才会真的把 `reasoning_effort=none` 发出去。
+  只补缺失项：手写过的 `off`（含 `null` = 该模型不支持关闭思考）绝不覆盖。
+- **移除最后 4 处确认弹窗**，改为点击即执行：保存时「API Key 为空」、删除配置、
+  激活时「Provider ID 已存在，要覆盖吗」、导入模型「将 N 个模型写入模型列表」。
+  仅保留 JSON 格式错误、缺少 Provider ID、Base URL 不合法、激活失败等错误提示，
+  以及「请先在左侧选择配置」等前置校验。
+- **支持 Claude Code 目标**：新增「目标(Target)」`pi agent` / `Claude Code`，
+  选 Claude 时把 `baseUrl` / `apiKey` / `model` 写进 `~/.claude/settings.json` 的 `env`
+  （`ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_MODEL`），
+  并支持任意额外环境变量（`claudeEnv`），以及从现有 Claude / pi 配置导入。
+- **修复「思考等级」下拉框被说明文字遮挡**：两者原来都 grid 到同一列，
+  说明文字盖住了下拉框；改为放进同一个子 Frame 左右排列。
+- 新增 `Pi-switch免安装版.spec`（除 exe 名外与 `Pi-switch.spec` 相同）。
 
 ### v1.1.1
 
